@@ -5,6 +5,7 @@ Covers:
 - Unterminated string literals
 - Unterminated brace comments  { ...
 - Unterminated paren-star comments  (* ...
+- Invalid tokens  (digits immediately followed by letters, e.g. 2wex)
 - Error recovery  (valid tokens produced after an error)
 - LexError attributes  (kind, line, value)
 - Multiple errors in a single input
@@ -207,6 +208,67 @@ class TestUnterminatedParenComment:
 
 
 # ---------------------------------------------------------------------------
+# Invalid tokens  (digits immediately followed by letters)
+# ---------------------------------------------------------------------------
+class TestInvalidToken:
+    def test_digit_followed_by_letters(self):
+        _, errors = tokenize_errors('2wex')
+        assert len(errors) == 1
+        assert errors[0].kind == 'invalid_token'
+
+    def test_invalid_token_value(self):
+        _, errors = tokenize_errors('2wex')
+        assert errors[0].value == '2wex'
+
+    def test_invalid_token_no_tokens_produced(self):
+        tokens, _ = tokenize_errors('2wex')
+        assert tokens == []
+
+    def test_multiple_digits_then_letters(self):
+        _, errors = tokenize_errors('123abc')
+        assert len(errors) == 1
+        assert errors[0].kind == 'invalid_token'
+        assert errors[0].value == '123abc'
+
+    def test_invalid_exponent_no_digits(self):
+        # '1e' looks like scientific notation but has no digits after e
+        _, errors = tokenize_errors('1e')
+        assert len(errors) == 1
+        assert errors[0].kind == 'invalid_token'
+
+    def test_valid_scientific_notation_no_error(self):
+        _, errors = tokenize_errors('9E8')
+        assert errors == []
+
+    def test_valid_scientific_signed_no_error(self):
+        _, errors = tokenize_errors('1e-3')
+        assert errors == []
+
+    def test_valid_scientific_plus_no_error(self):
+        _, errors = tokenize_errors('1E+10')
+        assert errors == []
+
+    def test_invalid_token_line_number(self):
+        _, errors = tokenize_errors('x\n2wex')
+        assert errors[0].line == 2
+
+    def test_recovery_after_invalid_token(self):
+        tokens, errors = tokenize_errors('2wex + 1')
+        assert len(errors) == 1
+        types = [t for t, _ in tokens]
+        assert types == ['PLUS', 'INTEGER']
+
+    def test_invalid_token_in_declaration(self):
+        # mirrors the sample: '2wex, y : integer;'
+        tokens, errors = tokenize_errors('2wex, y : integer;')
+        assert len(errors) == 1
+        assert errors[0].kind == 'invalid_token'
+        types = [t for t, _ in tokens]
+        assert 'COMMA' in types
+        assert 'SEMICOLON' in types
+
+
+# ---------------------------------------------------------------------------
 # LexError attributes
 # ---------------------------------------------------------------------------
 class TestLexErrorAttributes:
@@ -225,6 +287,10 @@ class TestLexErrorAttributes:
     def test_unterminated_paren_kind(self):
         _, errors = tokenize_errors('(* oops')
         assert errors[0].kind == 'unterminated_comment'
+
+    def test_invalid_token_kind(self):
+        _, errors = tokenize_errors('2wex')
+        assert errors[0].kind == 'invalid_token'
 
     def test_lexerror_str_contains_kind(self):
         _, errors = tokenize_errors('#')

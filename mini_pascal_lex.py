@@ -12,7 +12,7 @@ import ply.lex as lex
 @dataclass
 class LexError:
     """A lexical error recorded during scanning."""
-    kind: str   # 'illegal_character' | 'unterminated_string' | 'unterminated_comment'
+    kind: str   # 'illegal_character' | 'unterminated_string' | 'unterminated_comment' | 'invalid_token'
     line: int
     value: str
 
@@ -158,10 +158,21 @@ def t_COMMENT_PAREN(t):
 # ---------------------------------------------------------------------------
 # Literal rules (functions take priority over string rules in PLY)
 # ---------------------------------------------------------------------------
+
+# Validates that a matched value is truly a REAL literal (not e.g. '2wex').
+_REAL_VALIDATE = re.compile(r'(\d+\.\d+([eE][+-]?\d+)?|\d+[eE][+-]?\d+)$')
+
+
 def t_REAL(t):
-    r'\d+\.\d+([eE][+-]?\d+)?|\d+[eE][+-]?\d+'
-    t.value = float(t.value)
-    return t
+    r'\d+\.\d+([eE][+-]?\d+)?|\d+[eE][+-]?\d+|\d+[a-zA-Z_][a-zA-Z0-9_]*'
+    # The third alternative catches digits immediately followed by letters.
+    # Valid scientific notation is handled by the first two alternatives, which
+    # take precedence in the regex.  If we still end up here with something
+    # like '2wex' or '1e', it is an invalid token.
+    if _REAL_VALIDATE.match(t.value):
+        t.value = float(t.value)
+        return t
+    _record_error(t.lexer, 'invalid_token', t.value)
 
 
 def t_INTEGER(t):
@@ -222,7 +233,7 @@ if __name__ == '__main__':
     sample = """\
 program HelloWorld;
 var
-  x, y : integer;
+  2wex, y : integer;
   pi   : real;
 begin
   (* assign values *)
