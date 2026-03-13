@@ -1,0 +1,8 @@
+services:
+  lexer:
+    build: .
+    command: python3 mini_pascal_lex.py
+
+  test:
+    build: .
+    command: pytest tests/ -v
