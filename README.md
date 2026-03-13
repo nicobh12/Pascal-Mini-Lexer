@@ -23,14 +23,15 @@ the **PLY** (Python Lex-Yacc) library.
 
 ```
 Pascal-Mini-Lexer/
-├── mini_pascal_lex.py      # PLY lexer — single source of truth
+├── mini_pascal_lex.py          # PLY lexer — single source of truth
 ├── tests/
-│   └── test_lexer.py       # pytest suite (28 tests)
+│   ├── test_lexer.py           # pytest suite — happy-path tests (30 tests)
+│   └── test_lexer_errors.py    # pytest suite — error detection tests (47 tests)
 ├── .claude/
-│   ├── CLAUDE.md           # Claude Code project instructions
-│   └── agents.md           # Multi-agent workflow definitions
-├── CONTRIBUTING.md         # PR process and git workflow
-└── README.md               # This file
+│   ├── CLAUDE.md               # Claude Code project instructions
+│   └── agents.md               # Multi-agent workflow definitions
+├── CONTRIBUTING.md             # PR process and git workflow
+└── README.md                   # This file
 ```
 
 ---
@@ -226,10 +227,22 @@ docker compose build
 docker compose run --rm lexer
 ```
 
-### Run the tests
+### Run all tests
 
 ```bash
 docker compose run --rm test
+```
+
+### Run only the error-detection tests
+
+```bash
+docker compose run --rm test pytest tests/test_lexer_errors.py -v
+```
+
+### Run only the happy-path tests
+
+```bash
+docker compose run --rm test pytest tests/test_lexer.py -v
 ```
 
 Both commands automatically rebuild the image if any file has changed.
@@ -260,33 +273,61 @@ Line   Token Type     Value
 ### Using the lexer as a library
 
 ```python
-import ply.lex as lex
-import mini_pascal_lex as lexer_module
+from mini_pascal_lex import make_lexer
 
-lx = lex.lex(module=lexer_module)
+lx = make_lexer()
 lx.input("x := 42;")
 
 for tok in lx:
     print(tok.type, tok.value, tok.lineno)
-# ID      x   1
-# ASSIGN  :=  1
-# INTEGER 42  1
-# SEMICOLON ; 1
+# ID        x   1
+# ASSIGN    :=  1
+# INTEGER   42  1
+# SEMICOLON ;   1
+
+# Check for lexical errors after scanning
+if lx.errors:
+    for err in lx.errors:
+        print(err)
 ```
 
 ---
 
 ## Running tests
 
+### Locally
+
 ```bash
+# All tests (77 total)
 pytest tests/ -v
+
+# Happy-path only
+pytest tests/test_lexer.py -v
+
+# Error-detection only
+pytest tests/test_lexer_errors.py -v
 ```
 
 ```
-28 passed in 0.03s
+77 passed in 0.06s
 ```
 
-Test classes:
+### With Docker
+
+```bash
+# All tests
+docker compose run --rm test
+
+# Error-detection tests only
+docker compose run --rm test pytest tests/test_lexer_errors.py -v
+
+# Happy-path tests only
+docker compose run --rm test pytest tests/test_lexer.py -v
+```
+
+### Test classes
+
+**`tests/test_lexer.py`** — happy-path (30 tests)
 
 | Class | Coverage |
 |---|---|
@@ -296,6 +337,40 @@ Test classes:
 | `TestComments` | brace, paren-star, inline, multiline line-number tracking |
 | `TestLineNumbers` | lineno increments across newlines |
 | `TestIntegration` | assignment, if-then-else, for-loop, array range |
+
+**`tests/test_lexer_errors.py`** — error detection (47 tests)
+
+| Class | Coverage |
+|---|---|
+| `TestIllegalCharacters` | `#` `$` `%` `!` `~` `` ` ``; error value, line number, recovery after bad char |
+| `TestUnterminatedString` | Missing closing `'`, at EOL, mid-file, after escaped-quote `''` edge case |
+| `TestUnterminatedBraceComment` | `{ ...` never closed; value, recovery, multiline valid case |
+| `TestUnterminatedParenComment` | `(* ...` never closed; value, recovery, multiline valid/invalid |
+| `TestLexErrorAttributes` | `kind`, `line`, `value` fields; `__str__` output; dataclass shape |
+| `TestErrorRecovery` | Mixed error types, valid tokens after errors, clean input = empty list |
+
+### `LexError` reference
+
+Every error is stored as a `LexError(kind, line, value)` dataclass on `lx.errors`:
+
+```python
+from mini_pascal_lex import make_lexer
+
+lx = make_lexer()
+lx.input("x := #42; 'unterminated")
+tokens = list(lx)
+
+for err in lx.errors:
+    print(err)
+# [LexError] illegal_character at line 1: '#'
+# [LexError] unterminated_string at line 1: "'unterminated"
+```
+
+| `kind` value | Trigger |
+|---|---|
+| `illegal_character` | Any character not matched by any rule (e.g. `#`, `$`, `%`) |
+| `unterminated_string` | A string literal opened with `'` but not closed before end of line |
+| `unterminated_comment` | A `{ }` or `(* *)` comment opened but never closed |
 
 ---
 

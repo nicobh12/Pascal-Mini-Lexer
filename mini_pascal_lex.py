@@ -1,5 +1,30 @@
 # Analizador léxico para Mini-Pascal usando PLY (Python Lex-Yacc)
+import re
+import sys
+from dataclasses import dataclass
+
 import ply.lex as lex
+
+
+# ---------------------------------------------------------------------------
+# Error reporting
+# ---------------------------------------------------------------------------
+@dataclass
+class LexError:
+    """A lexical error recorded during scanning."""
+    kind: str   # 'illegal_character' | 'unterminated_string' | 'unterminated_comment'
+    line: int
+    value: str
+
+    def __str__(self) -> str:
+        return f"[LexError] {self.kind} at line {self.line}: {self.value!r}"
+
+
+def _record_error(lx, kind: str, value: str) -> None:
+    """Append a LexError to the lexer's error list (initialised lazily)."""
+    if not hasattr(lx, 'errors'):
+        lx.errors: list[LexError] = []
+    lx.errors.append(LexError(kind=kind, line=lx.lineno, value=value))
 
 # ---------------------------------------------------------------------------
 # Reserved words (case-insensitive — matched via t_ID lowercase normalization)
@@ -117,12 +142,16 @@ t_ignore = ' \t\r'
 # Comment rules (discarded — no return)
 # ---------------------------------------------------------------------------
 def t_COMMENT_BRACE(t):
-    r'\{[^}]*\}'
+    r'\{[^}]*(?:\}|\Z)'
+    if not t.value.endswith('}'):
+        _record_error(t.lexer, 'unterminated_comment', t.value[:60])
     t.lexer.lineno += t.value.count('\n')
 
 
 def t_COMMENT_PAREN(t):
-    r'\(\*(.|\n)*?\*\)'
+    r'\(\*(.|\n)*?(?:\*\)|\Z)'
+    if not t.value.endswith('*)'):
+        _record_error(t.lexer, 'unterminated_comment', t.value[:60])
     t.lexer.lineno += t.value.count('\n')
 
 
@@ -141,11 +170,18 @@ def t_INTEGER(t):
     return t
 
 
+# Matches a properly-closed Pascal string; used to validate inside t_STRING.
+_PROPER_STRING_RE = re.compile(r"'([^'\n]|'')*'$")
+
+
 def t_STRING(t):
-    r"'([^'\n]|'')*'"
-    # Strip surrounding quotes and unescape doubled single-quotes
-    t.value = t.value[1:-1].replace("''", "'")
-    return t
+    r"'([^'\n]|'')*(?:'|(?=\n|\Z))"
+    if _PROPER_STRING_RE.match(t.value):
+        # Strip surrounding quotes and unescape doubled single-quotes
+        t.value = t.value[1:-1].replace("''", "'")
+        return t
+    # String opened but never closed on this line — consume and record error.
+    _record_error(t.lexer, 'unterminated_string', t.value)
 
 
 def t_ID(t):
@@ -161,6 +197,7 @@ def t_newline(t):
 
 
 def t_error(t):
+    _record_error(t.lexer, 'illegal_character', t.value[0])
     print(f"[Lexer] Illegal character '{t.value[0]}' at line {t.lexer.lineno} — skipping.")
     t.lexer.skip(1)
 
@@ -168,7 +205,14 @@ def t_error(t):
 # ---------------------------------------------------------------------------
 # Build lexer
 # ---------------------------------------------------------------------------
-lexer = lex.lex()
+def make_lexer() -> lex.Lexer:
+    """Create a fresh lexer instance with an empty error list."""
+    lx = lex.lex(module=sys.modules[__name__])
+    lx.errors: list[LexError] = []
+    return lx
+
+
+lexer = make_lexer()
 
 
 # ---------------------------------------------------------------------------
