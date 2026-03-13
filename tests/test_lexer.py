@@ -64,6 +64,12 @@ class TestIdentifiers:
     def test_reserved_end(self):
         assert tokenize('end') == [('END', 'end')]
 
+    def test_reserved_writeln(self):
+        assert tokenize('writeln') == [('WRITELN', 'writeln')]
+
+    def test_reserved_writeln_case_insensitive(self):
+        assert tokenize('WRITELN') == [('WRITELN', 'WRITELN')]
+
     def test_id_underscore(self):
         assert tokenize('_foo') == [('ID', '_foo')]
 
