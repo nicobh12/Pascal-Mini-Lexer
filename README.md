@@ -1,7 +1,7 @@
-# Mini-Pascal Lexer
+# Mini-Pascal Lexer + Parser
 
-A lexical analyser for the Mini-Pascal language, built with **Python 3.9+** and
-the **PLY** (Python Lex-Yacc) library.
+A **lexical analyser** and **recursive-descent syntactic parser** for the
+Mini-Pascal language, built with **Python 3.9+** and the **PLY** library.
 
 ---
 
@@ -11,11 +11,12 @@ the **PLY** (Python Lex-Yacc) library.
 2. [Architecture overview](#architecture-overview)
 3. [Token reference](#token-reference)
 4. [PLY internals — how the lexer works](#ply-internals--how-the-lexer-works)
-5. [Docker (no local install required)](#docker-no-local-install-required)
-6. [Setup and usage](#setup-and-usage)
-7. [Running tests](#running-tests)
-8. [Development workflow](#development-workflow)
-9. [Agent-assisted development](#agent-assisted-development)
+5. [Parser — how it works](#parser--how-it-works)
+6. [Docker (no local install required)](#docker-no-local-install-required)
+7. [Setup and usage](#setup-and-usage)
+8. [Running tests](#running-tests)
+9. [Development workflow](#development-workflow)
+10. [Agent-assisted development](#agent-assisted-development)
 
 ---
 
@@ -24,9 +25,13 @@ the **PLY** (Python Lex-Yacc) library.
 ```
 Pascal-Mini-Lexer/
 ├── mini_pascal_lex.py          # PLY lexer — single source of truth
+├── mini_pascal_parser.py       # Recursive-descent parser + AST nodes
+├── demo.py                     # Demo: valid program (tokens + AST)
+├── demo_errors.py              # Demo: program with intentional errors
 ├── tests/
-│   ├── test_lexer.py           # pytest suite — happy-path tests (30 tests)
-│   └── test_lexer_errors.py    # pytest suite — error detection tests (47 tests)
+│   ├── test_lexer.py           # pytest suite — lexer happy-path (30 tests)
+│   ├── test_lexer_errors.py    # pytest suite — lexer error detection (47 tests)
+│   └── test_parser.py          # pytest suite — parser (155 tests)
 ├── .claude/
 │   ├── CLAUDE.md               # Claude Code project instructions
 │   └── agents.md               # Multi-agent workflow definitions
@@ -57,7 +62,20 @@ Source code (string)
   (type, value, lineno, lexpos)
         |
         v
-  [future] Parser / AST
+  ┌───────────────────────┐
+  │  Recursive-descent    │  mini_pascal_parser.py
+  │  parser               │
+  │                       │
+  │  1. program           │  PROGRAM id ; block .
+  │  2. block             │  label? const? type? var? proc/func* compound
+  │  3. statements        │  if / while / for / repeat / case / assign / call
+  │  4. expressions       │  precedence: NOT > */div/mod/and > +/-/or > relational
+  │  5. types             │  simple / subrange / array / record / set / file / pointer
+  └───────────────────────┘
+        |
+        v
+  ParseResult(program: Program, parse_errors, lex_errors)
+  Typed AST — dataclass nodes for every construct
 ```
 
 ### Rule priority in PLY
@@ -202,6 +220,103 @@ subtraction expressions like `x - 1`.
 
 ---
 
+## Parser — how it works
+
+`mini_pascal_parser.py` contains a hand-written LL(1)-style **recursive-descent
+parser** that consumes the token stream produced by the lexer and builds a typed
+Abstract Syntax Tree (AST).
+
+### Using the parser as a library
+
+```python
+from mini_pascal_parser import parse
+
+result = parse("""\
+program HelloWorld;
+begin
+  writeln('Hello, World!')
+end.
+""")
+
+if result.ok:
+    prog = result.program
+    print(prog.name)           # 'HelloWorld'
+    print(prog.block.body)     # CompoundStmt(stmts=[WritelnStmt(...)])
+else:
+    for err in result.parse_errors:
+        print(err)             # [ParseError] syntax_error at line N: ...
+    for err in result.lex_errors:
+        print(err)             # [LexError] ...
+```
+
+### ParseResult
+
+| Field | Type | Description |
+|---|---|---|
+| `program` | `Program \| None` | Root AST node (None only on catastrophic failure) |
+| `parse_errors` | `list[ParseError]` | Syntax errors collected during parsing |
+| `lex_errors` | `list[LexError]` | Lexical errors from the scanner |
+| `.ok` | `bool` | `True` when both error lists are empty |
+
+### ParseError
+
+```python
+@dataclass
+class ParseError:
+    kind: str       # always 'syntax_error'
+    line: int       # 1-based line number where the error was detected
+    message: str    # human-readable description, e.g. "Expected 'THEN', got 'ID'"
+```
+
+### AST node reference
+
+Every node is a Python `dataclass` with a `line` field (1-based source line).
+
+| Category | Nodes |
+|---|---|
+| **Program** | `Program(name, params, block)` · `Block(labels, consts, types, vars, subprograms, body)` |
+| **Declarations** | `ConstDef` · `TypeDef` · `VarDecl` · `Param` · `ProcDecl` · `FuncDecl` |
+| **Types** | `SimpleType` · `SubrangeType` · `ArrayType` · `RecordType` · `SetType` · `FileType` · `PointerType` |
+| **Statements** | `CompoundStmt` · `AssignStmt` · `IfStmt` · `WhileStmt` · `ForStmt` · `RepeatStmt` · `CaseStmt` · `GotoStmt` · `WritelnStmt` · `ProcCallStmt` · `WithStmt` |
+| **Expressions** | `BinOp(op, left, right)` · `UnaryOp(op, operand)` · `FuncCall(name, args)` |
+| **Literals** | `IntLit` · `RealLit` · `StrLit` · `NilLit` |
+| **Variables** | `Var(name)` · `IndexVar(base, indices)` · `FieldVar(base, field_name)` · `DerefVar(base)` |
+
+### Operator precedence (lowest → highest)
+
+| Level | Operators |
+|---|---|
+| 1 (lowest) | `=` `<>` `<` `>` `<=` `>=` `in` |
+| 2 | `+` `-` `or` |
+| 3 | `*` `/` `div` `mod` `and` |
+| 4 (highest) | `not` (unary) · `-` (unary) |
+
+### Grammar summary
+
+```
+program         → PROGRAM id [( id-list )] ; block .
+block           → [LABEL labels ;] [CONST const-defs] [TYPE type-defs]
+                  [VAR var-decls] subprogram* compound
+subprogram      → PROCEDURE id params ; (FORWARD ; | block ;)
+                | FUNCTION  id params : id ; (FORWARD ; | block ;)
+params          → ( param-section { ; param-section } ) | ε
+param-section   → [VAR] id-list : id
+compound        → BEGIN stmt { ; stmt } END
+stmt            → assign | compound | if | while | for | repeat | case
+                | goto | writeln | with | proc-call | ε
+assign          → variable := expr
+expr            → simple-expr [ rel-op simple-expr ]
+simple-expr     → [sign] term { add-op term }
+term            → factor { mul-op factor }
+factor          → integer | real | string | nil | ( expr ) | NOT factor
+                | id [ ( args ) | suffixes ]
+variable        → id { [ indices ] | . id | ^ }
+type-denoter    → simple-type | ARRAY[…] OF type | RECORD fields END
+                | SET OF simple-type | FILE OF type | ^id | PACKED …
+```
+
+---
+
 ## Docker (no local install required)
 
 The only prerequisite is [Docker Desktop](https://www.docker.com/products/docker-desktop/).
@@ -210,7 +325,7 @@ No Python, no PLY, no pytest needed on your machine.
 ```
 Pascal-Mini-Lexer/
 ├── Dockerfile          # python:3.11-slim + pip install
-├── docker-compose.yml  # two services: lexer / test
+├── docker-compose.yml  # three services: analyzer / analyzer-errors / test
 ├── requirements.txt    # ply + pytest pinned versions
 └── .dockerignore       # keeps the image small
 ```
@@ -221,10 +336,16 @@ Pascal-Mini-Lexer/
 docker compose build
 ```
 
-### Run the demo
+### Run the valid program demo
 
 ```bash
-docker compose run --rm lexer
+docker compose run --rm analyzer
+```
+
+### Run the error program demo
+
+```bash
+docker compose run --rm analyzer-errors
 ```
 
 ### Run all tests
@@ -245,6 +366,12 @@ docker compose run --rm test pytest tests/test_lexer_errors.py -v
 docker compose run --rm test pytest tests/test_lexer.py -v
 ```
 
+### Run only the parser tests
+
+```bash
+docker compose run --rm test pytest tests/test_parser.py -v
+```
+
 Both commands automatically rebuild the image if any file has changed.
 
 ---
@@ -255,7 +382,13 @@ Both commands automatically rebuild the image if any file has changed.
 # Install dependencies
 pip install ply pytest
 
-# Run the built-in demo (tokenises a small Pascal program)
+# Valid program — tokens + AST
+python3 demo.py
+
+# Program with errors — lexical and syntactic error report
+python3 demo_errors.py
+
+# Lexer-only demo (raw token table with intentional lex errors)
 python3 mini_pascal_lex.py
 ```
 
@@ -298,18 +431,21 @@ if lx.errors:
 ### Locally
 
 ```bash
-# All tests (77 total)
+# All tests (232 total)
 pytest tests/ -v
 
-# Happy-path only
-pytest tests/test_lexer.py -v
+# Lexer only
+pytest tests/test_lexer.py tests/test_lexer_errors.py -v
 
-# Error-detection only
-pytest tests/test_lexer_errors.py -v
+# Parser only
+pytest tests/test_parser.py -v
+
+# Parser — error cases only
+pytest tests/test_parser.py::TestParseErrors -v
 ```
 
 ```
-77 passed in 0.06s
+232 passed in 0.18s
 ```
 
 ### With Docker
@@ -318,16 +454,16 @@ pytest tests/test_lexer_errors.py -v
 # All tests
 docker compose run --rm test
 
-# Error-detection tests only
-docker compose run --rm test pytest tests/test_lexer_errors.py -v
+# Parser tests only
+docker compose run --rm test pytest tests/test_parser.py -v
 
-# Happy-path tests only
-docker compose run --rm test pytest tests/test_lexer.py -v
+# Error-detection tests only
+docker compose run --rm test pytest tests/test_lexer_errors.py tests/test_parser.py::TestParseErrors -v
 ```
 
 ### Test classes
 
-**`tests/test_lexer.py`** — happy-path (30 tests)
+**`tests/test_lexer.py`** — lexer happy-path (30 tests)
 
 | Class | Coverage |
 |---|---|
@@ -338,7 +474,7 @@ docker compose run --rm test pytest tests/test_lexer.py -v
 | `TestLineNumbers` | lineno increments across newlines |
 | `TestIntegration` | assignment, if-then-else, for-loop, array range |
 
-**`tests/test_lexer_errors.py`** — error detection (47 tests)
+**`tests/test_lexer_errors.py`** — lexer error detection (47 tests)
 
 | Class | Coverage |
 |---|---|
@@ -348,6 +484,31 @@ docker compose run --rm test pytest tests/test_lexer.py -v
 | `TestUnterminatedParenComment` | `(* ...` never closed; value, recovery, multiline valid/invalid |
 | `TestLexErrorAttributes` | `kind`, `line`, `value` fields; `__str__` output; dataclass shape |
 | `TestErrorRecovery` | Mixed error types, valid tokens after errors, clean input = empty list |
+
+**`tests/test_parser.py`** — parser (155 tests)
+
+| Class | Tests | Coverage |
+|---|---|---|
+| `TestProgramStructure` | 5 | minimal program, params, block, body |
+| `TestLabelDeclaration` | 3 | integer label, id label, multiple labels |
+| `TestConstDeclarations` | 6 | int, real, string, negative, named, multiple |
+| `TestTypeDeclarations` | 13 | alias, subrange, signed subrange, array, packed array, multidim array, record, record multifield, record trailing `;`, pointer, set, file, multiple |
+| `TestVarDeclarations` | 5 | single, multi-name, multiple decls, array type, record type |
+| `TestSubprogramDeclarations` | 8 | proc no params, with params, var param, multi-section params, function, forward proc, forward func, multiple subprograms |
+| `TestCompoundStatement` | 5 | empty, single, multiple, trailing `;`, nested |
+| `TestAssignmentStatement` | 8 | simple, expression, array element, multidim array, field, deref, chained field, string |
+| `TestIfStatement` | 5 | if-then, if-then-else, nested if, compound branch, boolean condition |
+| `TestWhileStatement` | 3 | basic, compound body, NOT condition |
+| `TestForStatement` | 4 | to, downto, expr bounds, compound body |
+| `TestRepeatStatement` | 2 | basic, multiple stmts |
+| `TestCaseStatement` | 5 | single element, multiple elements, multiple labels, trailing `;`, expression |
+| `TestGotoStatement` | 2 | integer label, id label |
+| `TestWritelnStatement` | 4 | no args, one arg, multiple args, expression arg |
+| `TestProcedureCallStatement` | 3 | no args, with args, expression arg |
+| `TestWithStatement` | 3 | basic, multiple vars, compound body |
+| `TestExpressions` | 19 | all literals, arithmetic precedence, parens, unary −/NOT, all relational ops, AND/OR, DIV/MOD, function calls, IN, nested calls, complex, array/field/deref access |
+| `TestComplexPrograms` | 5 | factorial (recursive fn), bubble sort, hello world, record program, GCD with repeat |
+| `TestParseErrors` | 46 | every missing keyword/token across program, const, type, var, subprogram, and statement levels; error metadata (line, message, str format); `ParseResult.ok` and `bool()` |
 
 ### `LexError` reference
 
