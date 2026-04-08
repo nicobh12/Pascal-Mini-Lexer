@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python3", "mini_pascal_lex.py"]
+CMD ["python3", "demo.py"]

@@ -1,7 +1,11 @@
 services:
-  lexer:
+  analyzer:
     build: .
-    command: python3 mini_pascal_lex.py
+    command: python3 demo.py
+
+  analyzer-errors:
+    build: .
+    command: python3 demo_errors.py
 
   test:
     build: .
