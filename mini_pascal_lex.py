@@ -1,4 +1,7 @@
-# Analizador léxico para Mini-Pascal usando PLY (Python Lex-Yacc)
+#Lexical analyzer for a mini-Pascal language, implemented using PLY (Python Lex-Yacc).
+# Note: Some design decisions, documentation, and test ideas were developed
+# with assistance from Anthropic Claude (AI). The final implementation and
+# integration were completed and reviewed by the author.
 import re
 import sys
 from dataclasses import dataclass
