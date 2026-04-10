@@ -438,7 +438,7 @@ def p_error(p):
         parse_errors_global.append("Syntax error at end of file")
         return
 
-    # evitar spam de errores en la misma línea
+    # avoid spam errors
     if len(parse_errors_global) > 0:
         last = parse_errors_global[-1]
         if f"line {p.lineno}" in last:
@@ -448,7 +448,7 @@ def p_error(p):
         f"Syntax error '{p.value}' line {p.lineno}"
     )
 
-    # sincronización: saltar hasta algo útil
+    # skip sync until makes something usefull
     while True:
         tok = parser.token()
         if not tok or tok.type in ('SEMICOLON', 'END'):
