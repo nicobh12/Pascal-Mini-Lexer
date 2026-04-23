@@ -963,41 +963,138 @@ def p_empty(p):
 # ============================================================
 # Error recovery productions
 # ============================================================
-# These let PLY synchronise at natural boundaries (;) so that one bad
-# declaration or statement doesn't cascade into spurious follow-on errors.
+# Strategy: two-layer recovery.
+#
+# Layer A — SPECIFIC rules (preferred by PLY because they match higher in the
+#   LR stack without popping).  Each rule ends with `error` so PLY can shift
+#   the error token immediately when the EXPECTED token is missing, leaving the
+#   erroneous lookahead in place for the next production to consume.  After
+#   each recovery we call p.parser.errok() to reset PLY's internal errorcount,
+#   allowing the NEXT bad token to trigger a new p_error call immediately.
+#
+# Layer B — GENERIC `error SEMICOLON` rules (fallback for completely malformed
+#   declarations / statements).  They discard tokens up to the next `;` and
+#   also call errok() so subsequent errors are not suppressed.
+
+# ---- Layer A: missing semicolon after well-formed constructs ---------------
+
+def p_const_def_missing_semi(p):
+    'const_def : ID EQUALS constant error'
+    # e.g. "limit = 100" with no ";" — next token is left as lookahead
+    p.parser.errok()
+    p[0] = ConstDef(name=p[1], value=p[3], line=p.lineno(1))
+
+
+def p_type_def_missing_semi(p):
+    'type_def : ID EQUALS type_denoter error'
+    p.parser.errok()
+    p[0] = TypeDef(name=p[1], type_node=p[3], line=p.lineno(1))
+
+
+def p_var_decl_missing_semi(p):
+    'var_decl : id_list COLON type_denoter error'
+    p.parser.errok()
+    p[0] = VarDecl(names=p[1], type_node=p[3], line=p.lineno(1))
+
+
+# ---- Layer A: missing keywords in structured statements --------------------
+
+def p_if_stmt_missing_then(p):
+    'if_stmt : IF expression error statement'
+    # e.g. "if x > 0 y := 1"  (THEN absent)
+    p.parser.errok()
+    p[0] = IfStmt(condition=p[2], then_branch=p[4], else_branch=None,
+                  line=p.lineno(1))
+
+
+def p_for_stmt_to_missing_do(p):
+    'for_stmt : FOR ID ASSIGN expression TO expression error statement'
+    # e.g. "for i := 1 to n writeln(i)"  (DO absent)
+    p.parser.errok()
+    p[0] = ForStmt(var=p[2], start=p[4], direction='to', end=p[6],
+                   body=p[8], line=p.lineno(1))
+
+
+def p_for_stmt_downto_missing_do(p):
+    'for_stmt : FOR ID ASSIGN expression DOWNTO expression error statement'
+    p.parser.errok()
+    p[0] = ForStmt(var=p[2], start=p[4], direction='downto', end=p[6],
+                   body=p[8], line=p.lineno(1))
+
+
+def p_while_stmt_missing_do(p):
+    'while_stmt : WHILE expression error statement'
+    # e.g. "while x > 0 x := x - 1"  (DO absent)
+    p.parser.errok()
+    p[0] = WhileStmt(condition=p[2], body=p[4], line=p.lineno(1))
+
+
+# ---- Layer B: generic fallback productions (consume up to next ";") --------
 
 def p_const_def_error(p):
     'const_def : error SEMICOLON'
+    p.parser.errok()
     p[0] = None          # filtered out in const_defs action
 
 
 def p_type_def_error(p):
     'type_def : error SEMICOLON'
+    p.parser.errok()
     p[0] = None
 
 
 def p_var_decl_error(p):
     'var_decl : error SEMICOLON'
+    p.parser.errok()
     p[0] = None
+
+
+def p_stmt_seq_missing_semi(p):
+    'stmt_seq : stmt_seq error statement'
+    # Two consecutive statements without ";" between them.
+    # The error token fires when the parser sees a new statement start
+    # where it expected SEMICOLON.  After recovery, the next error can be
+    # detected immediately because errok() resets PLY's error counter.
+    p.parser.errok()
+    p[0] = p[1] + ([p[3]] if p[3] is not None else [])
 
 
 def p_stmt_seq_error_semi(p):
     'stmt_seq : error SEMICOLON'
+    p.parser.errok()
     p[0] = []
+
+
+def p_id_stmt_assign_missing_expr(p):
+    'id_stmt : id_prefix ASSIGN error'
+    # e.g. "msg :=" with no right-hand-side expression (e.g. after an
+    # unterminated string that the lexer silently discarded).
+    p.parser.errok()
+    p[0] = None
 
 
 def p_repeat_error(p):
     'repeat_stmt : REPEAT stmt_seq error'
+    p.parser.errok()
     p[0] = RepeatStmt(body=p[2], condition=NilLit(), line=p.lineno(1))
 
 
 def p_error(p):
     if p is None:
-        _record_parse_error(0, 'unexpected end of file')
+        # EOF reached before the program's final ".".
+        # lx.lineno is one past the last newline; subtract 1 for the actual
+        # last content line.
+        lx = getattr(_state, 'lexer_ref', None)
+        line = max(1, lx.lineno - 1) if lx is not None else 0
+        _record_parse_error(line, "unexpected end of input (missing '.'?)")
         return
-    _record_parse_error(p.lineno, f"unexpected token {p.value!r}")
-    # Do NOT call errok() — it prevents PLY's error productions from firing
-    # and would cause the parser to loop or miss synchronisation points.
+    # p.value is normally a raw Python value (str/int/float), but after some
+    # PLY error-recovery cycles it may arrive as a nested LexToken object.
+    # Unwrap until we reach a primitive value.
+    val = p.value
+    while hasattr(val, 'value'):
+        val = val.value
+    _record_parse_error(p.lineno, f"unexpected token {val!r}")
 
 
 # ============================================================
@@ -1030,9 +1127,11 @@ def parse(source: str) -> ParseResult:
     # Reset per-call thread-local state (PROBLEMA 10: thread-safe)
     _state.errors = []
     _state.last_error_line = -1
+    _state.lexer_ref = None   # set below; used by p_error(None) for EOF line
 
     result = ParseResult()
     lexer = make_lexer()
+    _state.lexer_ref = lexer  # give p_error(None) access to the current line
     lexer.input(source)
 
     tree = _parser.parse(source, lexer=lexer, tracking=True)
