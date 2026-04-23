@@ -17,7 +17,7 @@ for n, line in enumerate(source.splitlines(), 1):
     print(f"{n:>3} | {line}")
 print()
 
-result = compile_source(source, semantic=False)
+result = compile_source(source, phase='parse')
 
 # ---- Lexical errors ----
 if result.lex_errors:
