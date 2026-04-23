@@ -660,5 +660,236 @@ class TestMainNotReserved(unittest.TestCase):
         self.assertFalse(r.parse_errors, r.parse_errors)
 
 
+# ---------------------------------------------------------------------------
+# 13. Undeclared record field
+# ---------------------------------------------------------------------------
+
+class TestUndeclaredField(unittest.TestCase):
+
+    def test_undeclared_field_error(self):
+        src = prog(
+            decls=(
+                'type point = record x: real; y: real end;\n'
+                'var p: point;\n'
+            ),
+            body='p.z := 1.0',
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'undeclared_field'), r.errors)
+
+    def test_declared_field_ok(self):
+        src = prog(
+            decls=(
+                'type point = record x: real; y: real end;\n'
+                'var p: point;\n'
+            ),
+            body='p.x := 1.0',
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_field_on_undeclared_var_no_spurious_field_error(self):
+        # T_ANY from undeclared base must not also emit undeclared_field.
+        r = err(prog(body='unknown_var.field := 1'))
+        self.assertFalse(has_error(r, 'undeclared_field'), r.errors)
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 14. GOTO — undeclared label check
+# ---------------------------------------------------------------------------
+
+class TestGotoStmt(unittest.TestCase):
+
+    def test_goto_declared_label_ok(self):
+        src = (
+            "program Test;\n"
+            "label 10;\n"
+            "begin\n"
+            "  goto 10;\n"
+            "  10: writeln\n"
+            "end.\n"
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_goto_undeclared_label_error(self):
+        src = (
+            "program Test;\n"
+            "begin\n"
+            "  goto 99\n"
+            "end.\n"
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'undeclared_label'), r.errors)
+
+    def test_goto_string_label_ok(self):
+        src = (
+            "program Test;\n"
+            "label exit_loop;\n"
+            "begin\n"
+            "  goto exit_loop;\n"
+            "  exit_loop: writeln\n"
+            "end.\n"
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_goto_string_label_undeclared_error(self):
+        src = (
+            "program Test;\n"
+            "begin\n"
+            "  goto nowhere\n"
+            "end.\n"
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'undeclared_label'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 15. Boolean condition checks — if / while / repeat
+# ---------------------------------------------------------------------------
+
+class TestBooleanConditions(unittest.TestCase):
+
+    def test_if_comparison_ok(self):
+        r = ok(prog(decls='var i: integer;\n', body='if i > 0 then writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_if_bool_var_ok(self):
+        r = ok(prog(decls='var flag: boolean;\n', body='if flag then writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_if_integer_condition_error(self):
+        r = err(prog(decls='var i: integer;\n', body='if i then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_if_real_condition_error(self):
+        r = err(prog(decls='var x: real;\n', body='if x then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_if_undeclared_no_extra_error(self):
+        r = err(prog(body='if ghost then writeln'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_while_comparison_ok(self):
+        r = ok(prog(decls='var i: integer;\n', body='while i < 10 do i := i + 1'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_while_bool_var_ok(self):
+        r = ok(prog(decls='var flag: boolean;\n', body='while flag do writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_while_integer_condition_error(self):
+        r = err(prog(decls='var i: integer;\n', body='while i do writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_while_undeclared_no_extra_error(self):
+        r = err(prog(body='while ghost do writeln'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_repeat_comparison_ok(self):
+        r = ok(prog(decls='var i: integer;\n',
+                    body='repeat\n  i := i + 1\nuntil i >= 10'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_repeat_bool_var_ok(self):
+        r = ok(prog(decls='var done: boolean;\n',
+                    body='repeat\n  writeln\nuntil done'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_repeat_integer_condition_error(self):
+        r = err(prog(decls='var i: integer;\n',
+                     body='repeat\n  i := i + 1\nuntil i'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_repeat_undeclared_no_extra_error(self):
+        r = err(prog(body='repeat\n  writeln\nuntil ghost'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 16. Pointer dereference — non-pointer base
+# ---------------------------------------------------------------------------
+
+class TestDerefVar(unittest.TestCase):
+
+    def test_deref_pointer_ok(self):
+        src = prog(
+            decls='var p: ^integer;\n    x: integer;\n',
+            body='x := p^',
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_deref_non_pointer_error(self):
+        src = prog(decls='var i: integer;\n', body='writeln(i^)')
+        r = err(src)
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_deref_undeclared_no_extra_error(self):
+        r = err(prog(body='writeln(ghost^)'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 17. AND / OR — operands must be boolean
+# ---------------------------------------------------------------------------
+
+class TestBooleanOperators(unittest.TestCase):
+
+    def test_and_bool_operands_ok(self):
+        r = ok(prog(decls='var a, b: boolean;\n', body='if a and b then writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_or_bool_operands_ok(self):
+        r = ok(prog(decls='var a, b: boolean;\n', body='if a or b then writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_and_integer_left_error(self):
+        r = err(prog(decls='var i: integer;\n    b: boolean;\n',
+                     body='if i and b then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_and_integer_right_error(self):
+        r = err(prog(decls='var b: boolean;\n    i: integer;\n',
+                     body='if b and i then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_or_integer_operands_error(self):
+        r = err(prog(decls='var i, j: integer;\n',
+                     body='if i or j then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_and_undeclared_no_extra_error(self):
+        r = err(prog(decls='var b: boolean;\n', body='if b and ghost then writeln'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 18. NOT — operand must be boolean
+# ---------------------------------------------------------------------------
+
+class TestNotOperator(unittest.TestCase):
+
+    def test_not_bool_ok(self):
+        r = ok(prog(decls='var flag: boolean;\n', body='if not flag then writeln'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_not_integer_error(self):
+        r = err(prog(decls='var i: integer;\n', body='if not i then writeln'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+    def test_not_undeclared_no_extra_error(self):
+        r = err(prog(body='if not ghost then writeln'))
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+        self.assertFalse(has_error(r, 'type_mismatch'), r.errors)
+
+
 if __name__ == '__main__':
     unittest.main()
