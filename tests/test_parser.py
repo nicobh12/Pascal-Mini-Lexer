@@ -10,7 +10,7 @@ from mini_pascal_parser import (
     SimpleType, SubrangeType, ArrayType, RecordType, SetType, FileType, PointerType,
     CompoundStmt, AssignStmt, IfStmt, WhileStmt, ForStmt, RepeatStmt,
     CaseStmt, GotoStmt, WritelnStmt, ProcCallStmt, WithStmt,
-    IntLit, RealLit, StrLit, NilLit, BinOp, UnaryOp, FuncCall,
+    IntLit, RealLit, StrLit, NilLit, BoolLit, BinOp, UnaryOp, FuncCall,
     Var, IndexVar, FieldVar, DerefVar,
     ParseError,
 )
@@ -1144,6 +1144,115 @@ class TestParseErrors(unittest.TestCase):
 
     def test_bool_on_invalid(self):
         self.assertFalse(bool(parse("bad")))
+
+
+# ---------------------------------------------------------------------------
+# 21. BoolLit — true/false are now first-class AST literals (PROBLEMA 12)
+# ---------------------------------------------------------------------------
+
+class TestBoolLiteral(unittest.TestCase):
+
+    def test_true_produces_bool_lit(self):
+        p = parse_ok(prog('flag := true'))
+        s = p.block.body.stmts[0]
+        self.assertIsInstance(s, AssignStmt)
+        self.assertIsInstance(s.value, BoolLit)
+        self.assertTrue(s.value.value)
+
+    def test_false_produces_bool_lit(self):
+        p = parse_ok(prog('flag := false'))
+        s = p.block.body.stmts[0]
+        self.assertIsInstance(s.value, BoolLit)
+        self.assertFalse(s.value.value)
+
+    def test_bool_in_condition(self):
+        p = parse_ok(prog('if true then x := 1'))
+        s = p.block.body.stmts[0]
+        self.assertIsInstance(s.condition, BoolLit)
+
+    def test_bool_in_const(self):
+        p = parse_ok(prog(decls='const done = false;\n'))
+        c = p.block.consts[0]
+        self.assertIsInstance(c.value, BoolLit)
+        self.assertFalse(c.value.value)
+
+    def test_bool_case_insensitive(self):
+        p = parse_ok(prog('x := TRUE'))
+        s = p.block.body.stmts[0]
+        self.assertIsInstance(s.value, BoolLit)
+        self.assertTrue(s.value.value)
+
+
+# ---------------------------------------------------------------------------
+# 22. Labeled statements (BUG 6)
+# ---------------------------------------------------------------------------
+
+class TestLabeledStatements(unittest.TestCase):
+
+    def test_integer_label_placement(self):
+        src = "program Test;\nlabel 10;\nbegin\n  goto 10;\n  10: writeln\nend.\n"
+        p = parse_ok(src)
+        stmts = p.block.body.stmts
+        # goto + labeled writeln; label discarded → [GotoStmt, WritelnStmt]
+        self.assertEqual(len(stmts), 2)
+        self.assertIsInstance(stmts[0], GotoStmt)
+        self.assertIsInstance(stmts[1], WritelnStmt)
+
+    def test_id_label_placement(self):
+        src = "program Test;\nlabel done;\nbegin\n  done: writeln\nend.\n"
+        p = parse_ok(src)
+        stmts = p.block.body.stmts
+        self.assertEqual(len(stmts), 1)
+        self.assertIsInstance(stmts[0], WritelnStmt)
+
+    def test_label_with_compound_body(self):
+        src = "program Test;\nlabel 1;\nbegin\n  1: begin\n  writeln\nend\nend.\n"
+        p = parse_ok(src)
+        stmts = p.block.body.stmts
+        self.assertIsInstance(stmts[0], CompoundStmt)
+
+
+# ---------------------------------------------------------------------------
+# 23. Complex-lvalue-as-statement error (BUG 7)
+# ---------------------------------------------------------------------------
+
+class TestLvalueAsStatementError(unittest.TestCase):
+
+    def test_array_element_as_statement_gives_parse_error(self):
+        # a[i] used as a bare statement must produce a meaningful parse error,
+        # NOT a bogus undeclared-identifier '?' error in the semantic layer.
+        r = parse_err(prog('a[i]'))
+        self.assertTrue(r.parse_errors, "Expected a parse error for a[i] as statement")
+        # The error message must NOT contain the '?' sentinel
+        for e in r.parse_errors:
+            self.assertNotIn('?', e.message)
+
+    def test_field_var_as_statement_gives_parse_error(self):
+        r = parse_err(prog('pt.x'))
+        self.assertTrue(r.parse_errors)
+        for e in r.parse_errors:
+            self.assertNotIn('?', e.message)
+
+
+# ---------------------------------------------------------------------------
+# 24. 'main' is no longer a reserved keyword (BUG 1)
+# ---------------------------------------------------------------------------
+
+class TestMainNotKeyword(unittest.TestCase):
+
+    def test_main_as_variable(self):
+        p = parse_ok("program Test;\nvar main: integer;\nbegin\nmain := 1\nend.\n")
+        self.assertEqual(p.block.vars[0].names, ['main'])
+
+    def test_main_as_procedure_name(self):
+        src = "program Test;\nprocedure main;\nbegin\nend;\nbegin\nmain\nend.\n"
+        p = parse_ok(src)
+        self.assertEqual(p.block.subprograms[0].name, 'main')
+
+    def test_main_as_function_name(self):
+        src = "program Test;\nfunction main: integer;\nbegin\nmain := 0\nend;\nbegin\nend.\n"
+        p = parse_ok(src)
+        self.assertEqual(p.block.subprograms[0].name, 'main')
 
 
 if __name__ == '__main__':

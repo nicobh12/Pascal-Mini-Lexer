@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+parser.out
+parsetab.py
+pascal_parsetab.py
+.coverage
+coverage.xml
+*.egg-info/
+dist/
+build/
+.pytest_cache/

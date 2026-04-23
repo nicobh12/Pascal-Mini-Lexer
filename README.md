@@ -1,7 +1,7 @@
-# Mini-Pascal Lexer + Parser
+# Mini-Pascal Compiler
 
-A **lexical analyser** and **recursive-descent syntactic parser** for the
-Mini-Pascal language, built with **Python 3.9+** and the **PLY** library.
+A three-layer **Mini-Pascal compiler front-end** built with **Python 3.9+** and the **PLY** library.
+Covers lexical analysis, LALR(1) parsing with full AST construction, and semantic analysis.
 
 ---
 
@@ -9,14 +9,14 @@ Mini-Pascal language, built with **Python 3.9+** and the **PLY** library.
 
 1. [Project structure](#project-structure)
 2. [Architecture overview](#architecture-overview)
-3. [Token reference](#token-reference)
-4. [PLY internals — how the lexer works](#ply-internals--how-the-lexer-works)
-5. [Parser — how it works](#parser--how-it-works)
-6. [Docker (no local install required)](#docker-no-local-install-required)
-7. [Setup and usage](#setup-and-usage)
+3. [Setup](#setup)
+4. [CLI usage](#cli-usage)
+5. [Python API](#python-api)
+6. [Token reference](#token-reference)
+7. [AST node reference](#ast-node-reference)
 8. [Running tests](#running-tests)
-9. [Development workflow](#development-workflow)
-10. [Agent-assisted development](#agent-assisted-development)
+9. [Docker](#docker)
+10. [Development workflow](#development-workflow)
 
 ---
 
@@ -24,19 +24,37 @@ Mini-Pascal language, built with **Python 3.9+** and the **PLY** library.
 
 ```
 Pascal-Mini-Lexer/
-├── mini_pascal_lex.py          # PLY lexer — single source of truth
-├── mini_pascal_parser.py       # Recursive-descent parser + AST nodes
-├── demo.py                     # Demo: valid program (tokens + AST)
-├── demo_errors.py              # Demo: program with intentional errors
+├── compiler/                   # Main compiler package
+│   ├── __init__.py             # Public API re-exports
+│   ├── __main__.py             # CLI entry point (python -m compiler)
+│   ├── lexer.py                # PLY lexer — Layer 1
+│   ├── parser.py               # PLY LALR(1) parser + AST builder — Layer 2
+│   ├── ast.py                  # AST dataclass nodes
+│   ├── semantic.py             # Visitor-based semantic analyser — Layer 3
+│   ├── visitors.py             # ASTVisitor base + ASTPrinter
+│   └── pipeline.py             # compile_source() pipeline helper
+├── examples/
+│   ├── hello.pas               # Programa mínimo (sin errores)
+│   ├── factorial.pas           # Función recursiva (sin errores)
+│   ├── sorting.pas             # Burbuja + forward declaration (sin errores)
+│   ├── records.pas             # Registros y WITH (sin errores)
+│   └── errors/
+│       ├── lex_errors.pas      # Errores léxicos deliberados
+│       ├── syntax_errors.pas   # Errores sintácticos deliberados
+│       └── semantic_errors.pas # Errores semánticos deliberados
+├── mini_pascal_lex.py          # Backward-compat wrapper → compiler.lexer
+├── mini_pascal_parser.py       # Backward-compat wrapper → compiler.parser / ast
+├── mini_pascal_semantic.py     # Backward-compat wrapper → compiler.semantic
+├── mini_pascal_compiler.py     # Backward-compat wrapper → compiler.pipeline
 ├── tests/
-│   ├── test_lexer.py           # pytest suite — lexer happy-path (30 tests)
-│   ├── test_lexer_errors.py    # pytest suite — lexer error detection (47 tests)
-│   └── test_parser.py          # pytest suite — parser (155 tests)
-├── .claude/
-│   ├── CLAUDE.md               # Claude Code project instructions
-│   └── agents.md               # Multi-agent workflow definitions
-├── CONTRIBUTING.md             # PR process and git workflow
-└── README.md                   # This file
+│   ├── test_lexer.py           # Lexer happy-path (30 tests)
+│   ├── test_lexer_errors.py    # Lexer error detection (47 tests)
+│   ├── test_parser.py          # Parser tests (172 tests)
+│   └── test_semantic.py        # Semantic analysis tests (83 tests)
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -45,51 +63,282 @@ Pascal-Mini-Lexer/
 
 ```
 Source code (string)
-        |
-        v
-  ┌─────────────┐
-  │  PLY  lexer │  mini_pascal_lex.py
-  │             │
-  │  1. ignore  │  spaces, tabs, carriage returns
-  │  2. discard │  { comments }  (* and these *)
-  │  3. match   │  literals → INTEGER / REAL / STRING
-  │  4. match   │  identifiers → ID or reserved keyword token
-  │  5. match   │  operators & delimiters
-  └─────────────┘
-        |
-        v
-  Stream of LexToken objects
-  (type, value, lineno, lexpos)
-        |
-        v
-  ┌───────────────────────┐
-  │  Recursive-descent    │  mini_pascal_parser.py
-  │  parser               │
-  │                       │
-  │  1. program           │  PROGRAM id ; block .
-  │  2. block             │  label? const? type? var? proc/func* compound
-  │  3. statements        │  if / while / for / repeat / case / assign / call
-  │  4. expressions       │  precedence: NOT > */div/mod/and > +/-/or > relational
-  │  5. types             │  simple / subrange / array / record / set / file / pointer
-  └───────────────────────┘
-        |
-        v
-  ParseResult(program: Program, parse_errors, lex_errors)
-  Typed AST — dataclass nodes for every construct
+        │
+        ▼
+┌─────────────────┐
+│  compiler.lexer │  Layer 1 — PLY lexer
+│                 │  • Ignores whitespace and comments
+│                 │  • Produces INTEGER / REAL / STRING / ID / keyword tokens
+└─────────────────┘
+        │  Stream of LexToken objects
+        ▼
+┌──────────────────────┐
+│  compiler.parser     │  Layer 2 — PLY LALR(1) parser
+│                      │  • Builds a typed AST from the token stream
+│                      │  • Collects syntax errors without crashing
+│                      │  • Returns ParseResult(program, parse_errors, lex_errors)
+└──────────────────────┘
+        │  ParseResult
+        ▼
+┌──────────────────────┐
+│  compiler.semantic   │  Layer 3 — Visitor-based semantic analyser
+│                      │  • Type checking and inference
+│                      │  • Symbol table with nested scopes
+│                      │  • Forward declaration resolution
+│                      │  • Arity validation for calls
+│                      │  • Returns SemanticResult(errors)
+└──────────────────────┘
 ```
 
-### Rule priority in PLY
+---
 
-PLY applies rules in this fixed order:
+## Setup
 
-| Priority | Rule type | Examples |
-|---|---|---|
-| 1 (highest) | Function rules, top-to-bottom | `t_REAL`, `t_INTEGER`, `t_STRING`, `t_ID` |
-| 2 | String rules, sorted by **decreasing pattern length** | `t_ASSIGN` (`:=`) before `t_COLON` (`:`) |
-| 3 (lowest) | `t_error` fallback | illegal characters |
+```bash
+# Install dependencies
+pip install -r requirements.txt
+# or manually
+pip install ply pytest
+```
 
-This ordering is why `REAL` is defined before `INTEGER` (so `3.14` is never
-split into `3`, `.`, `14`) and why `:=` is never mis-tokenised as `:` + `=`.
+---
+
+## CLI usage
+
+```bash
+python -m compiler [options] <file.pas>
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--phase lex` | Run only the lexer, print the token table |
+| `--phase parse` | Run lexer + parser, report syntax errors |
+| `--phase semantic` | Run all three layers, report all errors |
+| `--phase all` | Same as `semantic` (default) |
+| `--tokens` | Print the token stream (layer 1) |
+| `--ast` | Print the AST after parsing (layer 2) |
+| `--symbols` | Print the symbol table after semantic analysis (layer 3) |
+| `--no-color` | Disable ANSI color output |
+
+### Programas válidos
+
+```bash
+# Compilación completa — sin errores esperados
+python3 -m compiler examples/hello.pas
+python3 -m compiler examples/factorial.pas
+python3 -m compiler examples/sorting.pas
+python3 -m compiler examples/records.pas
+```
+
+Salida típica:
+
+```
+Mini-Pascal Compiler  —  examples/hello.pas  [phase: all]
+
+┌───────────────────────┐
+│  Compilation Summary  │
+└───────────────────────┘
+  ✓  Lexical analysis           0 error(s)
+  ✓  Syntactic analysis         0 error(s)
+  ✓  Semantic analysis          0 error(s)
+
+  Compilation successful.
+```
+
+### Programas con errores
+
+```bash
+# Errores léxicos (carácter ilegal, string sin cerrar, comentario sin cerrar)
+python3 -m compiler examples/errors/lex_errors.pas
+
+# Errores sintácticos (falta THEN, falta DO, falta punto final)
+python3 -m compiler examples/errors/syntax_errors.pas
+
+# Errores semánticos (type_mismatch, undeclared, arity_mismatch)
+python3 -m compiler examples/errors/semantic_errors.pas
+```
+
+Salida de `semantic_errors.pas`:
+
+```
+Mini-Pascal Compiler  —  examples/errors/semantic_errors.pas  [phase: all]
+
+┌────────────────────────┐
+│  Semantic Errors  [4]  │
+└────────────────────────┘
+  ✗  [SemanticError] type_mismatch at line 20: cannot assign string to integer
+  ✗  [SemanticError] type_mismatch at line 21: cannot assign real to boolean
+  ✗  [SemanticError] undeclared_identifier at line 23: identifier 'z' is not declared
+  ✗  [SemanticError] arity_mismatch at line 25: 'Suma' expects 2 argument(s), got 3
+
+┌───────────────────────┐
+│  Compilation Summary  │
+└───────────────────────┘
+  ✓  Lexical analysis           0 error(s)
+  ✓  Syntactic analysis         0 error(s)
+  ✗  Semantic analysis          4 error(s)
+
+  4 error(s) found — compilation failed.
+```
+
+### Inspeccionar cada capa
+
+```bash
+# Capa 1 — ver tokens
+python3 -m compiler --phase lex examples/factorial.pas
+
+# Capa 2 — ver el AST
+python3 -m compiler --phase parse --ast examples/records.pas
+
+# Capa 3 — ver la tabla de símbolos (scopes + tipos)
+python3 -m compiler --symbols examples/sorting.pas
+
+# Todo junto
+python3 -m compiler --tokens --ast --symbols examples/factorial.pas
+
+# Sin colores (útil para CI o pipes)
+python3 -m compiler --no-color examples/hello.pas
+```
+
+Ejemplo de salida de `--symbols examples/sorting.pas`:
+
+```
+┌────────────────┐
+│  Symbol Table  │
+└────────────────┘
+
+  [Sorting]
+    N             integer
+    Lista         array of integer
+    datos         array of integer
+    i             integer
+    Swap          procedure
+    BubbleSort    procedure
+
+  [Swap]
+    a      integer
+    b      integer
+    tmp    integer
+
+  [BubbleSort]
+    arr    array of integer
+    n      integer
+    i      integer
+    j      integer
+```
+
+---
+
+## Python API
+
+### Full pipeline
+
+```python
+from compiler import compile_source
+
+result = compile_source(open('program.pas').read())
+if result.ok:
+    print("Compilation successful")
+else:
+    for err in result.all_errors():
+        print(err)
+```
+
+### Partial runs
+
+```python
+from compiler import compile_source
+
+result = compile_source(source, phase='lex')       # lexer only
+result = compile_source(source, phase='parse')     # lex + parse
+result = compile_source(source, phase='semantic')  # all three layers
+result = compile_source(source, phase='all')       # same as 'semantic'
+```
+
+### Parser only
+
+```python
+from compiler import parse
+
+result = parse("""\
+program Hello;
+begin
+  writeln('Hello, World!')
+end.
+""")
+
+if result.ok:
+    prog = result.program
+    print(prog.name)           # 'Hello'
+    print(prog.block.body)     # CompoundStmt(...)
+else:
+    for err in result.parse_errors:
+        print(err)             # [ParseError] syntax_error at line N: ...
+    for err in result.lex_errors:
+        print(err)             # [LexError] ...
+```
+
+### Semantic analysis only
+
+```python
+from compiler import parse, analyze
+
+parse_result = parse(source)
+sem_result = analyze(parse_result.program)
+
+if sem_result.ok:
+    print("No semantic errors")
+else:
+    for err in sem_result.errors:
+        print(err)             # [SemanticError] type_mismatch at line N: ...
+```
+
+### Lexer only
+
+```python
+from compiler import make_lexer
+
+lx = make_lexer()
+lx.input("x := 42;")
+
+for tok in lx:
+    print(tok.type, tok.value, tok.lineno)
+# ID        x   1
+# ASSIGN    :=  1
+# INTEGER   42  1
+# SEMICOLON ;   1
+
+if lx.errors:
+    for err in lx.errors:
+        print(err)
+```
+
+### AST visitor
+
+```python
+from compiler import parse
+from compiler.visitors import ASTVisitor
+
+class MyVisitor(ASTVisitor):
+    def visit_AssignStmt(self, node):
+        print(f"Assignment at line {node.line}: {node.target} := ...")
+
+result = parse(source)
+v = MyVisitor()
+v.visit(result.program)
+```
+
+### Print the AST
+
+```python
+from compiler import parse
+from compiler.visitors import ASTPrinter
+
+result = parse(source)
+ASTPrinter().visit(result.program)
+```
 
 ---
 
@@ -100,29 +349,19 @@ split into `3`, `.`, `14`) and why `:=` is never mis-tokenised as `:` + `=`.
 | Token | Pattern | Python value | Example |
 |---|---|---|---|
 | `INTEGER` | `\d+` | `int` | `42` |
-| `REAL` | `\d+\.\d+…` or `\d+[eE]…` | `float` | `3.14`, `9E8` |
+| `REAL` | `\d+\.\d+` or `\d+[eE]…` | `float` | `3.14`, `9E8` |
 | `STRING` | `'…'` (with `''` escape) | `str` (unescaped) | `'hello'`, `'it''s'` |
 | `ID` | `[a-zA-Z_][a-zA-Z0-9_]*` | `str` (original case) | `myVar`, `_foo` |
 
-### Arithmetic operators
+### Operators
 
-| Token | Symbol |
-|---|---|
-| `PLUS` | `+` |
-| `MINUS` | `-` |
-| `TIMES` | `*` |
-| `DIVIDE` | `/` |
-
-### Relational operators
-
-| Token | Symbol |
-|---|---|
-| `EQUALS` | `=` |
-| `NEQ` | `<>` |
-| `LT` | `<` |
-| `GT` | `>` |
-| `LEQ` | `<=` |
-| `GEQ` | `>=` |
+| Token | Symbol | Token | Symbol |
+|---|---|---|---|
+| `PLUS` | `+` | `MINUS` | `-` |
+| `TIMES` | `*` | `DIVIDE` | `/` |
+| `EQUALS` | `=` | `NEQ` | `<>` |
+| `LT` | `<` | `GT` | `>` |
+| `LEQ` | `<=` | `GEQ` | `>=` |
 
 ### Delimiters
 
@@ -135,140 +374,35 @@ split into `3`, `.`, `14`) and why `:=` is never mis-tokenised as `:` + `=`.
 | `COMMA` | `,` | `SEMICOLON` | `;` |
 | `CARET` | `^` | `AT` | `@` |
 
-### Reserved words (37 keywords)
+### Reserved words (36 keywords)
 
 ```
 AND      ARRAY    BEGIN    CASE     CONST    DIV      DO
 DOWNTO   ELSE     END      FILE     FOR      FORWARD  FUNCTION
-GOTO     IF       IN       LABEL    MAIN     MOD      NIL
-NOT      OF       OR       PACKED   PROCEDURE PROGRAM RECORD
-REPEAT   SET      THEN     TO       TYPE     UNTIL    VAR
-WHILE    WITH
+GOTO     IF       IN       LABEL    MOD      NIL      NOT
+OF       OR       PACKED   PROCEDURE PROGRAM RECORD   REPEAT
+SET      THEN     TO       TYPE     UNTIL    VAR      WHILE
+WITH
 ```
 
 Keywords are **case-insensitive**: `BEGIN`, `begin`, and `Begin` all produce
 the same `BEGIN` token.
 
-> Note: predefined type names such as `integer`, `real`, and `boolean` are
-> **not** reserved words in Pascal. They tokenise as `ID`.
+> `true` and `false` are **not** reserved words — they are predefined identifiers
+> that the parser and semantic analyser recognise as boolean literals.
+> `integer`, `real`, `boolean`, and `char` are also not reserved; they tokenise as `ID`.
 
 ### Comments (discarded)
 
-Both comment styles are silently dropped; newlines inside them are counted for
-accurate line-number tracking.
-
 ```pascal
 { This is a brace comment }
-(* This is a parenthesis-star comment
+(* This is a paren-star comment
    spanning multiple lines *)
 ```
 
 ---
 
-## PLY internals — how the lexer works
-
-### 1. Module-level `reserved` dict
-
-Maps lowercase keyword strings to their uppercase token names. Used inside
-`t_ID` to distinguish identifiers from keywords without adding 37 separate
-regex rules.
-
-```python
-reserved = { 'begin': 'BEGIN', 'end': 'END', ... }
-```
-
-### 2. `tokens` tuple
-
-PLY requires every token name to appear in `tokens`. The tuple is built by
-combining the explicit token names with `tuple(reserved.values())`, keeping a
-single source of truth.
-
-### 3. String rules vs function rules
-
-**String rules** (simple assignments) are used for operators and delimiters
-because PLY automatically sorts them by decreasing pattern length — no manual
-ordering needed for prefix conflicts like `:=` vs `:`.
-
-**Function rules** are used for literals because they need value conversion
-(`int()`, `float()`, quote-stripping) and because function order matters for
-disambiguation (`t_REAL` before `t_INTEGER`).
-
-### 4. `t_ID` — keyword detection
-
-```python
-def t_ID(t):
-    r'[a-zA-Z_][a-zA-Z0-9_]*'
-    t.type = reserved.get(t.value.lower(), 'ID')
-    return t
-```
-
-The lowercase normalisation makes keyword matching case-insensitive while
-preserving the original casing in `t.value`.
-
-### 5. Comment rules
-
-Comment functions do **not** `return t`, so PLY discards the token entirely.
-They still update `t.lexer.lineno` so subsequent tokens report correct line
-numbers.
-
-### 6. No negative literal rule
-
-Negative numbers (`-42`, `-3.14`) are **not** handled by the lexer. The minus
-sign is always a `MINUS` token; the parser is responsible for interpreting
-unary minus. Handling negation in the lexer would cause ambiguity with
-subtraction expressions like `x - 1`.
-
----
-
-## Parser — how it works
-
-`mini_pascal_parser.py` contains a hand-written LL(1)-style **recursive-descent
-parser** that consumes the token stream produced by the lexer and builds a typed
-Abstract Syntax Tree (AST).
-
-### Using the parser as a library
-
-```python
-from mini_pascal_parser import parse
-
-result = parse("""\
-program HelloWorld;
-begin
-  writeln('Hello, World!')
-end.
-""")
-
-if result.ok:
-    prog = result.program
-    print(prog.name)           # 'HelloWorld'
-    print(prog.block.body)     # CompoundStmt(stmts=[WritelnStmt(...)])
-else:
-    for err in result.parse_errors:
-        print(err)             # [ParseError] syntax_error at line N: ...
-    for err in result.lex_errors:
-        print(err)             # [LexError] ...
-```
-
-### ParseResult
-
-| Field | Type | Description |
-|---|---|---|
-| `program` | `Program \| None` | Root AST node (None only on catastrophic failure) |
-| `parse_errors` | `list[ParseError]` | Syntax errors collected during parsing |
-| `lex_errors` | `list[LexError]` | Lexical errors from the scanner |
-| `.ok` | `bool` | `True` when both error lists are empty |
-
-### ParseError
-
-```python
-@dataclass
-class ParseError:
-    kind: str       # always 'syntax_error'
-    line: int       # 1-based line number where the error was detected
-    message: str    # human-readable description, e.g. "Expected 'THEN', got 'ID'"
-```
-
-### AST node reference
+## AST node reference
 
 Every node is a Python `dataclass` with a `line` field (1-based source line).
 
@@ -279,7 +413,7 @@ Every node is a Python `dataclass` with a `line` field (1-based source line).
 | **Types** | `SimpleType` · `SubrangeType` · `ArrayType` · `RecordType` · `SetType` · `FileType` · `PointerType` |
 | **Statements** | `CompoundStmt` · `AssignStmt` · `IfStmt` · `WhileStmt` · `ForStmt` · `RepeatStmt` · `CaseStmt` · `GotoStmt` · `WritelnStmt` · `ProcCallStmt` · `WithStmt` |
 | **Expressions** | `BinOp(op, left, right)` · `UnaryOp(op, operand)` · `FuncCall(name, args)` |
-| **Literals** | `IntLit` · `RealLit` · `StrLit` · `NilLit` |
+| **Literals** | `IntLit` · `RealLit` · `StrLit` · `NilLit` · `BoolLit(value: bool)` |
 | **Variables** | `Var(name)` · `IndexVar(base, indices)` · `FieldVar(base, field_name)` · `DerefVar(base)` |
 
 ### Operator precedence (lowest → highest)
@@ -289,140 +423,7 @@ Every node is a Python `dataclass` with a `line` field (1-based source line).
 | 1 (lowest) | `=` `<>` `<` `>` `<=` `>=` `in` |
 | 2 | `+` `-` `or` |
 | 3 | `*` `/` `div` `mod` `and` |
-| 4 (highest) | `not` (unary) · `-` (unary) |
-
-### Grammar summary
-
-```
-program         → PROGRAM id [( id-list )] ; block .
-block           → [LABEL labels ;] [CONST const-defs] [TYPE type-defs]
-                  [VAR var-decls] subprogram* compound
-subprogram      → PROCEDURE id params ; (FORWARD ; | block ;)
-                | FUNCTION  id params : id ; (FORWARD ; | block ;)
-params          → ( param-section { ; param-section } ) | ε
-param-section   → [VAR] id-list : id
-compound        → BEGIN stmt { ; stmt } END
-stmt            → assign | compound | if | while | for | repeat | case
-                | goto | writeln | with | proc-call | ε
-assign          → variable := expr
-expr            → simple-expr [ rel-op simple-expr ]
-simple-expr     → [sign] term { add-op term }
-term            → factor { mul-op factor }
-factor          → integer | real | string | nil | ( expr ) | NOT factor
-                | id [ ( args ) | suffixes ]
-variable        → id { [ indices ] | . id | ^ }
-type-denoter    → simple-type | ARRAY[…] OF type | RECORD fields END
-                | SET OF simple-type | FILE OF type | ^id | PACKED …
-```
-
----
-
-## Docker (no local install required)
-
-The only prerequisite is [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-No Python, no PLY, no pytest needed on your machine.
-
-```
-Pascal-Mini-Lexer/
-├── Dockerfile          # python:3.11-slim + pip install
-├── docker-compose.yml  # three services: analyzer / analyzer-errors / test
-├── requirements.txt    # ply + pytest pinned versions
-└── .dockerignore       # keeps the image small
-```
-
-### Build the image
-
-```bash
-docker compose build
-```
-
-### Run the valid program demo
-
-```bash
-docker compose run --rm analyzer
-```
-
-### Run the error program demo
-
-```bash
-docker compose run --rm analyzer-errors
-```
-
-### Run all tests
-
-```bash
-docker compose run --rm test
-```
-
-### Run only the error-detection tests
-
-```bash
-docker compose run --rm test pytest tests/test_lexer_errors.py -v
-```
-
-### Run only the happy-path tests
-
-```bash
-docker compose run --rm test pytest tests/test_lexer.py -v
-```
-
-### Run only the parser tests
-
-```bash
-docker compose run --rm test pytest tests/test_parser.py -v
-```
-
-Both commands automatically rebuild the image if any file has changed.
-
----
-
-## Setup and usage
-
-```bash
-# Install dependencies
-pip install ply pytest
-
-# Valid program — tokens + AST
-python3 demo.py
-
-# Program with errors — lexical and syntactic error report
-python3 demo_errors.py
-
-# Lexer-only demo (raw token table with intentional lex errors)
-python3 mini_pascal_lex.py
-```
-
-Expected output (truncated):
-
-```
-Line   Token Type     Value
-------------------------------------------------------------
-1      PROGRAM        'program'
-1      ID             'HelloWorld'
-1      SEMICOLON      ';'
-...
-```
-
-### Using the lexer as a library
-
-```python
-from mini_pascal_lex import make_lexer
-
-lx = make_lexer()
-lx.input("x := 42;")
-
-for tok in lx:
-    print(tok.type, tok.value, tok.lineno)
-# ID        x   1
-# ASSIGN    :=  1
-# INTEGER   42  1
-# SEMICOLON ;   1
-
-# Check for lexical errors after scanning
-if lx.errors:
-    for err in lx.errors:
-        print(err)
-```
+| 4 (highest) | `not` (unary) · unary `-` |
 
 ---
 
@@ -431,113 +432,122 @@ if lx.errors:
 ### Locally
 
 ```bash
-# All tests (232 total)
+# All tests (332 total)
 pytest tests/ -v
 
-# Lexer only
-pytest tests/test_lexer.py tests/test_lexer_errors.py -v
-
-# Parser only
+# Individual suites
+pytest tests/test_lexer.py -v
+pytest tests/test_lexer_errors.py -v
 pytest tests/test_parser.py -v
+pytest tests/test_semantic.py -v
 
-# Parser — error cases only
+# Specific class
+pytest tests/test_semantic.py::TestArityChecking -v
 pytest tests/test_parser.py::TestParseErrors -v
 ```
 
 ```
-232 passed in 0.18s
+332 passed in 0.XX s
 ```
 
-### With Docker
+### Test suites
 
-```bash
-# All tests
-docker compose run --rm test
-
-# Parser tests only
-docker compose run --rm test pytest tests/test_parser.py -v
-
-# Error-detection tests only
-docker compose run --rm test pytest tests/test_lexer_errors.py tests/test_parser.py::TestParseErrors -v
-```
-
-### Test classes
-
-**`tests/test_lexer.py`** — lexer happy-path (30 tests)
+**`tests/test_lexer.py`** — 30 tests
 
 | Class | Coverage |
 |---|---|
-| `TestLiterals` | INTEGER, REAL (dot and exp), STRING, empty string, escaped quote |
-| `TestIdentifiers` | plain ID, reserved words, case-insensitive keywords, underscore |
+| `TestLiterals` | INTEGER, REAL, STRING, empty string, escaped quote |
+| `TestIdentifiers` | plain ID, reserved words, case-insensitive keywords |
 | `TestOperators` | prefix conflicts (`:=`/`:`, `..`/`.`, `<=`/`<`, `>=`/`>`, `<>`) |
-| `TestComments` | brace, paren-star, inline, multiline line-number tracking |
+| `TestComments` | brace, paren-star, inline, multiline, line-number tracking |
 | `TestLineNumbers` | lineno increments across newlines |
 | `TestIntegration` | assignment, if-then-else, for-loop, array range |
 
-**`tests/test_lexer_errors.py`** — lexer error detection (47 tests)
+**`tests/test_lexer_errors.py`** — 47 tests
 
 | Class | Coverage |
 |---|---|
-| `TestIllegalCharacters` | `#` `$` `%` `!` `~` `` ` ``; error value, line number, recovery after bad char |
-| `TestUnterminatedString` | Missing closing `'`, at EOL, mid-file, after escaped-quote `''` edge case |
-| `TestUnterminatedBraceComment` | `{ ...` never closed; value, recovery, multiline valid case |
-| `TestUnterminatedParenComment` | `(* ...` never closed; value, recovery, multiline valid/invalid |
-| `TestLexErrorAttributes` | `kind`, `line`, `value` fields; `__str__` output; dataclass shape |
-| `TestErrorRecovery` | Mixed error types, valid tokens after errors, clean input = empty list |
+| `TestIllegalCharacters` | `#` `$` `%` `!` `~`; error value, line, recovery |
+| `TestUnterminatedString` | Missing `'`, at EOL, mid-file, after `''` edge case |
+| `TestUnterminatedBraceComment` | `{ ...` never closed |
+| `TestUnterminatedParenComment` | `(* ...` never closed |
+| `TestLexErrorAttributes` | `kind`, `line`, `value` fields; `__str__` format |
+| `TestErrorRecovery` | Mixed error types, valid tokens after errors |
 
-**`tests/test_parser.py`** — parser (155 tests)
+**`tests/test_parser.py`** — 172 tests
 
 | Class | Tests | Coverage |
 |---|---|---|
 | `TestProgramStructure` | 5 | minimal program, params, block, body |
 | `TestLabelDeclaration` | 3 | integer label, id label, multiple labels |
 | `TestConstDeclarations` | 6 | int, real, string, negative, named, multiple |
-| `TestTypeDeclarations` | 13 | alias, subrange, signed subrange, array, packed array, multidim array, record, record multifield, record trailing `;`, pointer, set, file, multiple |
-| `TestVarDeclarations` | 5 | single, multi-name, multiple decls, array type, record type |
-| `TestSubprogramDeclarations` | 8 | proc no params, with params, var param, multi-section params, function, forward proc, forward func, multiple subprograms |
-| `TestCompoundStatement` | 5 | empty, single, multiple, trailing `;`, nested |
-| `TestAssignmentStatement` | 8 | simple, expression, array element, multidim array, field, deref, chained field, string |
-| `TestIfStatement` | 5 | if-then, if-then-else, nested if, compound branch, boolean condition |
-| `TestWhileStatement` | 3 | basic, compound body, NOT condition |
-| `TestForStatement` | 4 | to, downto, expr bounds, compound body |
+| `TestTypeDeclarations` | 13 | alias, subrange, array, record, pointer, set, file |
+| `TestVarDeclarations` | 5 | single, multi-name, multiple decls |
+| `TestSubprogramDeclarations` | 8 | proc, function, forward, params, var-params |
+| `TestCompoundStatement` | 5 | empty, single, multiple, nested |
+| `TestAssignmentStatement` | 8 | simple, array, field, deref, chained |
+| `TestIfStatement` | 5 | if-then, if-then-else, nested |
+| `TestWhileStatement` | 3 | basic, NOT condition |
+| `TestForStatement` | 4 | to, downto, expr bounds |
 | `TestRepeatStatement` | 2 | basic, multiple stmts |
-| `TestCaseStatement` | 5 | single element, multiple elements, multiple labels, trailing `;`, expression |
+| `TestCaseStatement` | 5 | single/multiple elements, multiple labels |
 | `TestGotoStatement` | 2 | integer label, id label |
-| `TestWritelnStatement` | 4 | no args, one arg, multiple args, expression arg |
-| `TestProcedureCallStatement` | 3 | no args, with args, expression arg |
+| `TestWritelnStatement` | 4 | no args, one arg, multiple args |
+| `TestProcedureCallStatement` | 3 | no args, with args |
 | `TestWithStatement` | 3 | basic, multiple vars, compound body |
-| `TestExpressions` | 19 | all literals, arithmetic precedence, parens, unary −/NOT, all relational ops, AND/OR, DIV/MOD, function calls, IN, nested calls, complex, array/field/deref access |
-| `TestComplexPrograms` | 5 | factorial (recursive fn), bubble sort, hello world, record program, GCD with repeat |
-| `TestParseErrors` | 46 | every missing keyword/token across program, const, type, var, subprogram, and statement levels; error metadata (line, message, str format); `ParseResult.ok` and `bool()` |
+| `TestExpressions` | 19 | all literals, precedence, unary, relational, calls |
+| `TestComplexPrograms` | 5 | factorial, bubble sort, GCD, records |
+| `TestParseErrors` | 46 | every missing keyword/token; error metadata |
+| `TestBoolLiteral` | 5 | true/false as BoolLit nodes |
+| `TestLabeledStatements` | 3 | `10: stmt`, `myLabel: stmt` |
+| `TestLvalueAsStatementError` | 2 | complex lvalue as statement → parse error |
+| `TestMainNotKeyword` | 3 | `main` is a valid identifier |
 
-### `LexError` reference
+**`tests/test_semantic.py`** — 83 tests
 
-Every error is stored as a `LexError(kind, line, value)` dataclass on `lx.errors`:
+| Class | Tests | Coverage |
+|---|---|---|
+| `TestBasicDeclarations` | 8 | var, const, type declarations |
+| `TestTypeChecking` | 12 | assignments, int→real widening, type mismatch |
+| `TestExpressionTypes` | 10 | literals, arithmetic, boolean, comparison |
+| `TestControlFlow` | 8 | if, while, for, repeat condition type checking |
+| `TestProceduresAndFunctions` | 8 | decl, call, return type |
+| `TestUndeclaredIdentifiers` | 6 | undeclared vars, funcs |
+| `TestArityChecking` | 7 | too few / too many args, exact match, builtins skip arity |
+| `TestTypeCompatibilityExtended` | 3 | `char := 'A'`, `string → char`, nil → pointer |
+| `TestWithScope` | 3 | field access inside WITH, nested records, unknown field |
+| `TestForwardDeclarations` | 3 | forward proc, forward func, no duplicate error |
+| `TestBoolLit` | 3 | true/false are T_BOOL, bool in condition |
+| `TestMainNotReserved` | 2 | `main` as var/proc name |
+| `TestSemanticErrors` | ~12 | complete error message/kind/line coverage |
 
-```python
-from mini_pascal_lex import make_lexer
+---
 
-lx = make_lexer()
-lx.input("x := #42; 'unterminated")
-tokens = list(lx)
+## Docker
 
-for err in lx.errors:
-    print(err)
-# [LexError] illegal_character at line 1: '#'
-# [LexError] unterminated_string at line 1: "'unterminated"
+No local Python install required — only [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+```bash
+# Build the image
+docker compose build
+
+# Run the valid program demo
+docker compose run --rm analyzer
+
+# Run the error program demo
+docker compose run --rm analyzer-errors
+
+# Run all 332 tests
+docker compose run --rm test
+
+# Run a specific test suite
+docker compose run --rm test pytest tests/test_semantic.py -v
+docker compose run --rm test pytest tests/test_parser.py::TestParseErrors -v
 ```
-
-| `kind` value | Trigger |
-|---|---|
-| `illegal_character` | Any character not matched by any rule (e.g. `#`, `$`, `%`) |
-| `unterminated_string` | A string literal opened with `'` but not closed before end of line |
-| `unterminated_comment` | A `{ }` or `(* *)` comment opened but never closed |
 
 ---
 
 ## Development workflow
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
 
 ```bash
 # 1. Branch
@@ -547,7 +557,7 @@ git checkout -b feat/<description>
 pytest tests/ -v
 
 # 3. Commit
-git add mini_pascal_lex.py tests/
+git add compiler/ tests/
 git commit -m "feat: <description>"
 
 # 4. PR
@@ -557,17 +567,4 @@ gh pr create --title "..." --body "..."
 
 Branch naming: `feat/`, `fix/`, `test/`, `docs/`.
 
----
-
-## Agent-assisted development
-
-This project uses Claude Code sub-agents defined in [`.claude/agents.md`](.claude/agents.md).
-
-| Goal | Agent |
-|---|---|
-| Add or fix a token | `implementer` |
-| Write tests | `tester` |
-| Review a PR | `reviewer` |
-| Update docs | `docs` |
-
-Agent order: `implementer` → `tester` → `reviewer` → merge.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
