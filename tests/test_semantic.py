@@ -148,14 +148,12 @@ class TestValidPrograms(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
     def test_forward_declaration(self):
+        # BUG 2 fix: forward declaration followed by body must NOT be a duplicate.
         src = prog(
             decls='procedure p;\nforward;\nprocedure p;\nbegin\nend;\n'
         )
-        # Forward then body: second declaration of p may trigger duplicate.
-        # Semantic check should be lenient or handle forward correctly.
         r = ok(src)
-        # Just checking no crash
-        self.assertIsInstance(r, SemanticResult)
+        self.assertTrue(r.ok, r.errors)
 
     def test_builtin_writeln(self):
         r = ok(prog('writeln'))
@@ -190,6 +188,8 @@ class TestValidPrograms(unittest.TestCase):
         self.assertTrue(r.ok, r.errors)
 
     def test_with_statement(self):
+        # BUG 5 fix: WITH must open the record's field scope so that
+        # bare field names are visible inside the body.
         src = prog(
             decls=(
                 'type pt = record x: real; y: real end;\n'
@@ -198,7 +198,7 @@ class TestValidPrograms(unittest.TestCase):
             body='with p do x := 0.0'
         )
         r = ok(src)
-        self.assertIsInstance(r, SemanticResult)
+        self.assertTrue(r.ok, r.errors)
 
     def test_recursive_function(self):
         src = """\
@@ -437,6 +437,227 @@ class TestScoping(unittest.TestCase):
         )
         r = ok(src)
         self.assertTrue(r.ok, r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 7. Arity checking (BUG 3)
+# ---------------------------------------------------------------------------
+
+class TestArityChecking(unittest.TestCase):
+
+    def _func_src(self, call: str) -> str:
+        return prog(
+            decls=(
+                'var n: integer;\n'
+                'function double(x: integer): integer;\n'
+                'begin\n  double := x * 2\nend;\n'
+            ),
+            body=call,
+        )
+
+    def _proc_src(self, call: str) -> str:
+        return prog(
+            decls='procedure greet(name: string; times: integer);\nbegin\nend;\n',
+            body=call,
+        )
+
+    def test_function_correct_arity(self):
+        r = ok(self._func_src('n := double(5)'))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_function_arity_too_many(self):
+        r = err(self._func_src('n := double(1, 2, 3)'))
+        self.assertTrue(has_error(r, 'arity_mismatch'), r.errors)
+
+    def test_function_arity_too_few(self):
+        r = err(self._func_src('n := double()'))
+        self.assertTrue(has_error(r, 'arity_mismatch'), r.errors)
+
+    def test_procedure_correct_arity(self):
+        r = ok(self._proc_src("greet('Alice', 3)"))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_procedure_arity_mismatch(self):
+        r = err(self._proc_src("greet('Alice')"))
+        self.assertTrue(has_error(r, 'arity_mismatch'), r.errors)
+
+    def test_builtin_arity_not_checked(self):
+        # Built-in functions must NOT trigger arity_mismatch regardless of
+        # how many arguments are passed (they are variadic/overloaded).
+        r = ok(prog(
+            decls='var x: integer;\n',
+            body='x := abs(x)',
+        ))
+        self.assertFalse(has_error(r, 'arity_mismatch'), r.errors)
+
+    def test_zero_param_function_called_with_args(self):
+        src = prog(
+            decls=(
+                'var n: integer;\n'
+                'function answer: integer;\n'
+                'begin\n  answer := 42\nend;\n'
+            ),
+            body='n := answer(99)',
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'arity_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 8. Type compatibility additions (BUG 4)
+# ---------------------------------------------------------------------------
+
+class TestTypeCompatibilityExtended(unittest.TestCase):
+
+    def test_char_assign_single_string_ok(self):
+        # BUG 4 fix: char := 'A' must NOT be a type_mismatch.
+        r = ok(prog(
+            decls='var ch: char;\n',
+            body="ch := 'A'",
+        ))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_char_assign_multi_string(self):
+        # Assigning a multi-char string to char is also allowed at the semantic
+        # level (length is a runtime concern), so no error expected here either.
+        r = ok(prog(
+            decls='var ch: char;\n',
+            body="ch := 'AB'",
+        ))
+        self.assertIsInstance(r, SemanticResult)
+
+    def test_integer_assign_string_still_errors(self):
+        # Assigning a string to an integer variable must still be a type_mismatch.
+        r = err(prog("x := 'hello'", decls='var x: integer;\n'))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 9. WITH scope (BUG 5)
+# ---------------------------------------------------------------------------
+
+class TestWithScope(unittest.TestCase):
+
+    def test_with_fields_visible_in_body(self):
+        src = prog(
+            decls=(
+                'type pt = record x: real; y: real end;\n'
+                'var p: pt;\n'
+            ),
+            body='with p do begin\n  x := 1.0;\n  y := 2.0\nend',
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_with_field_undeclared_outside_body(self):
+        # 'x' must not leak outside the WITH scope.
+        src = prog(
+            decls=(
+                'type pt = record x: real end;\n'
+                'var p: pt;\n'
+                '    q: real;\n'
+            ),
+            body='with p do q := x;\nq := x',
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'undeclared_identifier'), r.errors)
+
+    def test_with_multiple_records(self):
+        src = prog(
+            decls=(
+                'type vec = record vx: real; vy: real end;\n'
+                'var a, b: vec;\n'
+                '    s: real;\n'
+            ),
+            body='with a, b do begin\n  vx := 0.0;\n  vy := 0.0\nend',
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 10. Forward declarations (BUG 2)
+# ---------------------------------------------------------------------------
+
+class TestForwardDeclarations(unittest.TestCase):
+
+    def test_forward_proc_no_duplicate(self):
+        src = prog(
+            decls=(
+                'procedure p;\nforward;\n'
+                'procedure p;\nbegin\nend;\n'
+            ),
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_forward_func_no_duplicate(self):
+        src = prog(
+            decls=(
+                'function f(x: integer): integer;\nforward;\n'
+                'function f(x: integer): integer;\nbegin\n  f := x\nend;\n'
+            ),
+        )
+        r = ok(src)
+        self.assertTrue(r.ok, r.errors)
+
+    def test_two_bodies_without_forward_is_duplicate(self):
+        src = prog(
+            decls=(
+                'procedure p;\nbegin\nend;\n'
+                'procedure p;\nbegin\nend;\n'
+            ),
+        )
+        r = err(src)
+        self.assertTrue(has_error(r, 'duplicate_declaration'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 11. BoolLit / true-false as literals (PROBLEMA 12)
+# ---------------------------------------------------------------------------
+
+class TestBoolLit(unittest.TestCase):
+
+    def test_true_assignable_to_boolean(self):
+        r = ok(prog(
+            decls='var flag: boolean;\n',
+            body='flag := true',
+        ))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_false_assignable_to_boolean(self):
+        r = ok(prog(
+            decls='var flag: boolean;\n',
+            body='flag := false',
+        ))
+        self.assertTrue(r.ok, r.errors)
+
+    def test_bool_assigned_to_integer_errors(self):
+        r = err(prog(
+            decls='var x: integer;\n',
+            body='x := true',
+        ))
+        self.assertTrue(has_error(r, 'type_mismatch'), r.errors)
+
+
+# ---------------------------------------------------------------------------
+# 12. main keyword removed (BUG 1)
+# ---------------------------------------------------------------------------
+
+class TestMainNotReserved(unittest.TestCase):
+
+    def test_main_as_variable(self):
+        from mini_pascal_parser import parse
+        r = parse("program Test;\nvar main: integer;\nbegin\nmain := 1\nend.\n")
+        self.assertFalse(r.parse_errors, r.parse_errors)
+        self.assertFalse(r.lex_errors, r.lex_errors)
+
+    def test_main_as_procedure_name(self):
+        from mini_pascal_parser import parse
+        r = parse(
+            "program Test;\nprocedure main;\nbegin\nend;\nbegin\nmain\nend.\n"
+        )
+        self.assertFalse(r.parse_errors, r.parse_errors)
 
 
 if __name__ == '__main__':

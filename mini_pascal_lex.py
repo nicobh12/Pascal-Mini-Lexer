@@ -51,7 +51,6 @@ reserved = {
     'if':        'IF',
     'in':        'IN',
     'label':     'LABEL',
-    'main':      'MAIN',
     'mod':       'MOD',
     'nil':       'NIL',
     'not':       'NOT',
@@ -212,7 +211,6 @@ def t_newline(t):
 
 def t_error(t):
     _record_error(t.lexer, 'illegal_character', t.value[0])
-    print(f"[Lexer] Illegal character '{t.value[0]}' at line {t.lexer.lineno} — skipping.")
     t.lexer.skip(1)
 
 
