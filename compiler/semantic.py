@@ -504,12 +504,18 @@ class SemanticAnalyzer(ASTVisitor):
                           f"cannot assign {et} to {vt}")
 
     def visit_IfStmt(self, node: IfStmt) -> None:
-        self._expr_type(node.condition)
+        ct = self._expr_type(node.condition)
+        if not isinstance(ct, (_BoolType, _AnyType)):
+            self._err('type_mismatch', node.line,
+                      f"'if' condition must be boolean, got {ct}")
         self.visit(node.then_branch)
         self.visit(node.else_branch)
 
     def visit_WhileStmt(self, node: WhileStmt) -> None:
-        self._expr_type(node.condition)
+        ct = self._expr_type(node.condition)
+        if not isinstance(ct, (_BoolType, _AnyType)):
+            self._err('type_mismatch', node.line,
+                      f"'while' condition must be boolean, got {ct}")
         self.visit(node.body)
 
     def visit_ForStmt(self, node: ForStmt) -> None:
@@ -522,7 +528,10 @@ class SemanticAnalyzer(ASTVisitor):
     def visit_RepeatStmt(self, node: RepeatStmt) -> None:
         for s in node.body:
             self.visit(s)
-        self._expr_type(node.condition)
+        ct = self._expr_type(node.condition)
+        if not isinstance(ct, (_BoolType, _AnyType)):
+            self._err('type_mismatch', node.line,
+                      f"'repeat' condition must be boolean, got {ct}")
 
     def visit_CaseStmt(self, node: CaseStmt) -> None:
         self._expr_type(node.expression)
@@ -532,7 +541,9 @@ class SemanticAnalyzer(ASTVisitor):
             self.visit(s)
 
     def visit_GotoStmt(self, node: GotoStmt) -> None:
-        pass   # label resolution requires a two-pass approach; not checked here
+        if self._scope.lookup(str(node.label)) is None:
+            self._err('undeclared_label', node.line,
+                      f"label '{node.label}' is not declared")
 
     def visit_WritelnStmt(self, node: WritelnStmt) -> None:
         for a in node.args:
@@ -619,6 +630,9 @@ class SemanticAnalyzer(ASTVisitor):
                 resolved = self._scope.lookup(base_t.target_name)
                 if isinstance(resolved, _Type):
                     return resolved
+            elif not isinstance(base_t, _AnyType):
+                self._err('type_mismatch', node.line,
+                          f"cannot dereference non-pointer type {base_t}")
             return T_ANY
 
         if isinstance(node, UnaryOp):
@@ -626,6 +640,10 @@ class SemanticAnalyzer(ASTVisitor):
             if node.op in ('PLUS', 'MINUS'):
                 return ot
             if node.op == 'NOT':
+                if not isinstance(ot, (_BoolType, _AnyType)):
+                    self._err('type_mismatch', node.line,
+                              f"'NOT' operator requires a boolean operand, "
+                              f"got {ot}")
                 return T_BOOL
             return T_ANY
 
@@ -634,6 +652,14 @@ class SemanticAnalyzer(ASTVisitor):
             rt = self._expr_type(node.right)
             op = node.op
             if op in ('AND', 'OR'):
+                if not isinstance(lt, (_BoolType, _AnyType)):
+                    self._err('type_mismatch', node.line,
+                              f"'{op}' operator requires boolean operands, "
+                              f"left operand is {lt}")
+                if not isinstance(rt, (_BoolType, _AnyType)):
+                    self._err('type_mismatch', node.line,
+                              f"'{op}' operator requires boolean operands, "
+                              f"right operand is {rt}")
                 return T_BOOL
             if op in ('EQUALS', 'NEQ', 'LT', 'GT', 'LEQ', 'GEQ', 'IN'):
                 return T_BOOL
